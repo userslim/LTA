@@ -6,25 +6,30 @@ from fpdf import FPDF
 from datetime import datetime
 import io
 
-# --- ACCESS CONTROL & MONETIZATION ---
-VALID_KEYS = ["PRO2026", "LTA_SG_VIP", "YAW_KEONG_99"]
-PAYMENT_LINK = "https://buy.stripe.com/your_actual_payment_link" # Replace with your real link
+# --- 1. ACCESS CONTROL DATABASE (MANUAL UPDATE) ---
+# Each email is mapped to ONE unique code. 
+# You update this list when you receive a Stripe payment notification.
+SUBSCRIBER_DATABASE = {
+    "engineer1@company.com": "LTA-7742-XP",
+    "consultant@mep-sg.com": "LTA-9012-ZZ",
+    "test@user.com": "12345" # For your own testing
+}
 
+PAYMENT_URL = "https://buy.stripe.com/your_link_for_59_99"
+
+# --- 2. LTA CALCULATION ENGINE ---
 def run_lta_logic(inputs):
-    p = inputs['target_pop']
-    n = inputs['num_floors']
-    v = inputs['speed']
-    
-    if p <= 0 or n <= 0: 
-        return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0}
+    p, n, v = inputs['target_pop'], inputs['num_floors'], inputs['speed']
+    if p <= 0 or n <= 0: return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0}
 
+    # CIBSE Guide D logic
     s_prob = n * (1 - (1 - 1/n)**p)
     h_prob = n - sum([(i/n)**p for i in range(1, n)])
-    
     t_cycle = inputs['t_open'] + inputs['t_close'] + inputs['t_dwell'] + inputs['t_load'] + inputs['t_unload']
     
     express_jump = 0
     if inputs['is_high_zone']:
+        # High zone skips 50% of the building height
         express_jump = ((inputs['total_bldg_floors'] / 2) * 3.5) / v
     
     rtt = (2 * h_prob * (3.5/v)) + ((s_prob + 1) * t_cycle) + (2 * p * inputs['t_load']) + (2 * express_jump)
@@ -32,60 +37,61 @@ def run_lta_logic(inputs):
     awt = interval * 0.7 
     
     return {
-        "RTT": round(rtt, 2),
-        "Interval": round(interval, 2),
-        "AWT": round(awt, 2),
-        "HC": round((300 * inputs['num_elevators'] * p) / rtt, 2)
+        "RTT": round(rtt, 2), "Interval": round(interval, 2),
+        "AWT": round(awt, 2), "HC": round((300 * inputs['num_elevators'] * p) / rtt, 2)
     }
 
-# --- UI APP SETUP ---
-st.set_page_config(page_title="LTA Professional Suite", layout="wide")
+# --- 3. UI LAYOUT ---
+st.set_page_config(page_title="LTA Pro Suite", layout="wide")
 
-# Sidebar: Payment and Subscription
-st.sidebar.title("💳 Subscription & Payment")
-st.sidebar.write("Unlock full technical metrics and PDF exports.")
-st.sidebar.markdown(f'''
-<a href="{PAYMENT_LINK}" target="_blank">
-    <button style="width:100%;background-color:#007bff;color:white;border:none;padding:10px;border-radius:5px;cursor:pointer;">
-        Pay Monthly Subscription ($50)
-    </button>
-</a>
-''', unsafe_allow_html=True)
+# Sidebar: Monetization
+st.sidebar.title("🔐 Pro Access")
+st.sidebar.write("Monthly License: **$59.99 USD**")
+st.sidebar.markdown(f'''<a href="{PAYMENT_URL}" target="_blank">
+    <button style="width:100%;background-color:#1db954;color:white;border:none;padding:12px;border-radius:5px;font-weight:bold;cursor:pointer;">
+        PAY NOW TO GET ACCESS CODE
+    </button></a>''', unsafe_allow_html=True)
 
 st.sidebar.divider()
-access_key = st.sidebar.text_input("Enter Access Key after Payment", type="password")
-is_pro = access_key in VALID_KEYS
+user_email = st.sidebar.text_input("Enter Registered Email")
+user_code = st.sidebar.text_input("Enter Unique Access Code", type="password")
 
-# Sidebar: Project Headers
-st.sidebar.header("📄 Report Header Info")
-proj_name = st.sidebar.text_input("Project Name", "New Development")
-proj_no = st.sidebar.text_input("Project Number", "2026-001")
-lta_title = st.sidebar.text_input("LTA Title", "Peak Traffic Study")
-creator = st.sidebar.text_input("Creator", "Yaw Keong")
-report_date = st.sidebar.date_input("Date", datetime.now())
+# Validation Logic
+is_pro = False
+if user_email in SUBSCRIBER_DATABASE:
+    if SUBSCRIBER_DATABASE[user_email] == user_code:
+        is_pro = True
+        st.sidebar.success("✅ Pro Access Active")
+    else:
+        st.sidebar.error("❌ Invalid Code for this Email")
+
+# Report Headers
+st.sidebar.divider()
+st.sidebar.header("📋 Report Headers")
+st_title = st.sidebar.text_input("LTA Title", "Peak Hour Analysis")
+st_job = st.sidebar.text_input("Project Name", "High-Rise Alpha")
+st_no = st.sidebar.text_input("Job Number", "2026-VT-001")
+st_user = st.sidebar.text_input("Creator", "Yaw Keong")
 
 st.title("🏗️ Professional Lift Traffic Analysis")
 
-# --- MAIN INPUT SECTION ---
+# --- 4. BUILDING & ELEVATOR INPUTS ---
 col1, col2 = st.columns(2)
-
 with col1:
     st.subheader("🏢 Building Specification")
-    # Building Type Selection
-    b_type = st.selectbox("Building Type", ["Office (Prestige)", "Office (Normal)", "Residential", "Hotel", "Hospital"])
-    
+    b_type = st.selectbox("Building Type", ["Office (Prestige)", "Office (Standard)", "Residential (HDB/Private)", "Hotel", "Hospital"])
     total_floors = st.number_input("Total Building Stories", min_value=1, value=12)
     
-    # Zoning Logic for 35+ floors
+    # Zone Selection Logic (Enabled only for 35+ floors)
+    zone_selection = "Single Zone"
     if total_floors >= 35:
         zone_selection = st.radio("Select Zone", ["Low Zone", "High Zone"], horizontal=True)
     else:
-        zone_selection = "Single Zone"
-        st.info("Zoning logic disabled for buildings under 35 floors.")
+        st.info("Zoning disabled for buildings under 35 floors.")
 
-    pop_method = st.radio("Population Entry", ["Bulk Population", "By Floor"])
+    pop_method = st.radio("Population Entry", ["Bulk Population", "By Floor Individual"])
     if pop_method == "Bulk Population":
-        target_pop = st.number_input("Population in Zone", value=400)
+        target_pop = st.number_input("Total Population in Zone", value=400)
         served_floors = st.number_input("Floors Served", value=total_floors)
     else:
         df_pop = st.data_editor(pd.DataFrame({"Floor": [f"L{i}" for i in range(1, total_floors+1)], "Pop": [30]*total_floors}), num_rows="dynamic")
@@ -93,7 +99,7 @@ with col1:
         served_floors = len(df_pop)
 
 with col2:
-    st.subheader("🚠 Elevator Specification")
+    st.subheader("🚠 Elevator Setup")
     l_config = st.selectbox("Configuration", ["Simplex (1)", "Duplex (2)", "Triplex (3)"])
     num_lifts = int(l_config.split('(')[1].replace(')', ''))
     speed = st.number_input("Rated Speed (m/s)", value=1.6 if total_floors < 20 else 3.5, step=0.5)
@@ -105,17 +111,15 @@ with col2:
         t_load = st.number_input("Loading Time (s)", value=0.5)
         t_unload = st.number_input("Unloading Time (s)", value=1.3)
 
-# --- CALCULATIONS ---
-is_high_zone = (zone_selection == "High Zone")
+# Calculate
 res = run_lta_logic({
     "num_elevators": num_lifts, "speed": speed, "total_bldg_floors": total_floors,
-    "num_floors": served_floors, "target_pop": target_pop, "is_high_zone": is_high_zone,
+    "num_floors": served_floors, "target_pop": target_pop, "is_high_zone": (zone_selection == "High Zone"),
     "t_open": t_open, "t_close": t_close, "t_dwell": t_dwell, "t_load": t_load, "t_unload": t_unload
 })
 
-# --- RESULTS DISPLAY ---
+# --- 5. RESULTS & GRAPHS ---
 st.divider()
-st.subheader("📊 Performance Analytics")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("RTT", f"{res['RTT']}s")
 c2.metric("Interval", f"{res['Interval']}s")
@@ -124,41 +128,33 @@ if is_pro:
     c3.metric("Avg Wait Time (AWT)", f"{res['AWT']}s")
     c4.metric("Handling Cap", f"{res['HC']}%")
 else:
-    c3.warning("AWT: PRO Only")
-    c4.warning("HC: PRO Only")
+    c3.warning("AWT: $59.99 Only")
+    c4.warning("HC: $59.99 Only")
 
-# --- GRAPHS (Always visible) ---
-st.subheader("📈 Traffic Distribution (AWT)")
+st.subheader("📊 Traffic Distribution (AWT Graph)")
+# Graph is visible to everyone as a "teaser" of the app's power
 fig, ax = plt.subplots(figsize=(8, 3))
 data = np.random.normal(res['AWT'], res['AWT']/4, 500)
-ax.hist(data, bins=30, color='#2e7d32', edgecolor='black', alpha=0.7)
-ax.axvline(res['AWT'], color='red', linestyle='dashed', label=f"Mean AWT: {res['AWT']}s")
-ax.set_title(f"Waiting Time Distribution for {b_type}")
-ax.set_xlabel("Seconds")
-ax.legend()
+ax.hist(data, bins=30, color='#1db954', edgecolor='black', alpha=0.7)
+ax.set_title(f"Wait Time Probability for {b_type}")
+ax.set_xlabel("Wait Time (Seconds)")
 st.pyplot(fig)
 
-# --- PRO PDF EXPORT ---
+# PDF Generation (PRO Only)
 if is_pro:
     if st.button("📥 Generate Pro PDF Report"):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 14)
-        pdf.cell(190, 10, lta_title, ln=True, align='C')
+        pdf.cell(190, 10, st_title, ln=True, align='C')
         pdf.set_font("Arial", '', 10)
-        pdf.cell(95, 8, f"Project: {proj_name}", border=1)
-        pdf.cell(95, 8, f"Job No: {proj_no}", border=1, ln=True)
-        pdf.cell(95, 8, f"Building Type: {b_type}", border=1)
-        pdf.cell(95, 8, f"Creator: {creator}", border=1, ln=True)
-        pdf.ln(5)
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(190, 10, "ANALYSIS SUMMARY", ln=True)
+        pdf.cell(95, 8, f"Project: {st_job}", border=1); pdf.cell(95, 8, f"Job No: {st_no}", border=1, ln=True)
+        pdf.cell(95, 8, f"Created By: {st_user}", border=1); pdf.cell(95, 8, f"Date: {datetime.now().strftime('%Y-%m-%d')}", border=1, ln=True)
+        pdf.ln(10)
+        pdf.set_font("Arial", 'B', 12); pdf.cell(190, 10, "TECHNICAL SUMMARY", ln=True)
         pdf.set_font("Arial", '', 10)
-        pdf.cell(95, 8, f"Avg Waiting Time: {res['AWT']}s", border=1)
+        pdf.cell(95, 8, f"Avg Waiting Time: {res['AWT']}s", border=1); pdf.cell(95, 8, f"Interval: {res['Interval']}s", border=1, ln=True)
         pdf.cell(95, 8, f"Handling Capacity: {res['HC']}%", border=1, ln=True)
-        
-        pdf_bytes = pdf.output(dest='S')
-        if not isinstance(pdf_bytes, bytes): pdf_bytes = pdf_bytes.encode('latin-1')
-        st.download_button("Click to Download PDF", data=pdf_bytes, file_name=f"{proj_no}_LTA.pdf")
+        st.download_button("Download Now", data=pdf.output(dest='S').encode('latin-1'), file_name=f"{st_no}_LTA.pdf")
 else:
-    st.error("⚠️ Monthly Payment Required for numerical AWT, Handling Capacity, and PDF Reports.")
+    st.error("⚠️ Monthly Payment Required for Full Metrics & PDF Exports.")
