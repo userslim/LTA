@@ -2,8 +2,5 @@ streamlit
 pandas
 matplotlib
 numpy
-gsheets
-connection
 fpdf2
-
-
+st-gsheets-connection
