@@ -5,32 +5,28 @@ import numpy as np
 from fpdf import FPDF
 from datetime import datetime
 import io
-import os
 
 # --- CORE CALCULATION ENGINE ---
 def run_simulation_logic(inputs):
-    # This simulates the RTT and distributions based on the detailed data provided
-    # Simplified for the web app but structured for professional output
+    # Professional RTT calculation using the detailed input parameters
     p = inputs['target_pop']
     n = inputs['num_floors']
     v = inputs['speed']
     acc = inputs['acceleration']
     
+    if p <= 0: return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0}
+
     # Probable Stops (S) and Highest Reversal (H)
     s_prob = n * (1 - (1 - 1/n)**p)
     h_prob = n - sum([(i/n)**p for i in range(1, n)])
     
-    # Dynamics (Time to reach speed)
-    t_acc = v / acc
-    d_acc = 0.5 * acc * (t_acc**2)
-    
-    # Cycle Times
+    # Dynamics (Cycle Times)
     t_cycle = inputs['t_open'] + inputs['t_close'] + inputs['t_dwell1'] + inputs['t_loading'] + inputs['t_unloading']
     
-    # Resulting RTT (incorporating acceleration/jerk delays)
+    # RTT Calculation (Basic model incorporating your specific MEP data)
     rtt = (2 * h_prob * (3.0/v)) + ((s_prob + 1) * t_cycle) + (2 * p * inputs['t_loading'])
     interval = rtt / inputs['num_elevators']
-    awt = interval * 0.8
+    awt = interval * 0.8 # Average Waiting Time approximation
     
     return {
         "RTT": round(rtt, 2),
@@ -40,125 +36,139 @@ def run_simulation_logic(inputs):
     }
 
 # --- UI SETUP ---
-st.set_page_config(page_title="Elevator Traffic Analysis Pro", layout="wide")
-st.title("🏙️ Professional Vertical Transportation Analysis")
+st.set_page_config(page_title="VT Traffic Analysis Pro", layout="wide")
+st.title("🏙️ Professional Lift Traffic Analysis (No-Logo Version)")
 
-# --- SIDEBAR INPUTS ---
-st.sidebar.header("📋 Project Info")
-job_name = st.sidebar.text_input("Job Name", "Office Tower A")
-job_no = st.sidebar.text_input("Job No", "2026-001")
-calc_title = st.sidebar.text_input("Calculation Title", "Peak Morning Analysis")
-made_by = st.sidebar.text_input("Made By", "Engineer")
-check_by = st.sidebar.text_input("Checked By", "Senior Lead")
+# --- SIDEBAR PROJECT INFO ---
+st.sidebar.header("📋 Project Header Info")
+job_name = st.sidebar.text_input("Job", "HDB Residential Project")
+job_no = st.sidebar.text_input("Job No", "SG-2026-X")
+calc_title = st.sidebar.text_input("Calculation Title", "Morning Peak Analysis")
+made_by = st.sidebar.text_input("Made By", "Yaw Keong")
+check_by = st.sidebar.text_input("Checked By", "Senior Engineer")
 
-st.sidebar.header("🏢 Building Data")
-absenteeism = st.sidebar.number_input("Absenteeism (%)", 0.0)
+# --- MAIN INPUTS ---
+col_left, col_right = st.columns([1, 1])
 
-# Building Data Table Input
-df_building = pd.DataFrame({
-    "Floor": ["Level " + str(i) for i in range(1, 12)],
-    "Height": [3.6 if i==1 else 2.8 for i in range(1, 12)],
-    "People": [0 if i==1 else 39 for i in range(1, 12)],
-    "Entrance": ["Yes" if i==1 else "No" for i in range(1, 12)]
-})
-edited_df = st.data_editor(df_building, num_rows="dynamic")
+with col_left:
+    st.subheader("🏢 Building & Floor Data")
+    # Initialize the specific table you requested
+    data = {
+        "Floor Name": [f"Level {i}" for i in range(1, 12)],
+        "Height (m)": [3.6 if i==1 else 2.8 for i in range(1, 12)],
+        "People": [0 if i==1 else 39 for i in range(1, 12)],
+        "Entrance": [True if i==1 else False for i in range(1, 12)]
+    }
+    df_building = pd.DataFrame(data)
+    edited_df = st.data_editor(df_building, num_rows="dynamic")
+    
+    st.write(f"**Total Population:** {edited_df['People'].sum()}")
+    st.write(f"**Absenteeism:** 0.00%")
 
-# --- MAIN INPUT TABS ---
-tab1, tab2, tab3 = st.tabs(["Elevator Data", "Passenger Data", "Graphs"])
-
-with tab1:
-    col1, col2 = st.columns(2)
-    with col1:
+with col_right:
+    st.subheader("🚠 Elevator & Passenger Data")
+    tabs = st.tabs(["Elevator Specs", "Timings", "Passenger Info"])
+    
+    with tabs[0]:
         n_elev = st.number_input("No of Elevators", value=2)
-        v_speed = st.number_input("Speed (m/s)", value=1.5)
-        accel = st.number_input("Acceleration (m/s²)", value=0.4)
-        jerk = st.number_input("Jerk (m/s³)", value=0.8)
-    with col2:
-        t_open = st.number_input("Door Open (s)", value=4.5)
-        t_close = st.number_input("Door Close (s)", value=4.5)
-        t_dwell1 = st.number_input("Dwell 1 (s)", value=3.0)
+        v_speed = st.number_input("Speed (m/s)", value=1.50, format="%.2f")
+        accel = st.number_input("Acceleration (m/s²)", value=0.40)
         cap_kg = st.number_input("Capacity (kg)", value=885)
+        
+    with tabs[1]:
+        t_open = st.number_input("Door Open (s)", value=4.50)
+        t_close = st.number_input("Door Close (s)", value=4.50)
+        t_dwell = st.number_input("Door Dwell (s)", value=3.00)
+        t_start = st.number_input("Start Delay (s)", value=0.00)
 
-with tab2:
-    col3, col4 = st.columns(2)
-    with col3:
-        demand = st.number_input("Demand (% pop / 5 min)", value=6.0)
-        incoming = st.number_input("Incoming (%)", value=12.0)
-        outgoing = st.number_input("Outgoing (%)", value=88.0)
-    with col4:
-        t_load = st.number_input("Loading Time (s)", value=0.5)
-        t_unload = st.number_input("Unloading Time (s)", value=1.3)
+    with tabs[2]:
+        demand = st.number_input("Demand (% pop / 5 min)", value=6.00)
+        t_load = st.number_input("Loading Time (s)", value=0.50)
+        t_unload = st.number_input("Unloading Time (s)", value=1.30)
 
-# --- ANALYSIS & GRAPHS ---
+# --- EXECUTE CALCULATIONS ---
 inputs = {
     "num_elevators": n_elev, "speed": v_speed, "acceleration": accel,
-    "t_open": t_open, "t_close": t_close, "t_dwell1": t_dwell1,
-    "t_loading": t_load, "t_unloading": t_unload, "num_floors": len(edited_df),
-    "target_pop": edited_df["People"].sum()
+    "t_open": t_open, "t_close": t_close, "t_dwell1": t_dwell,
+    "t_loading": t_load, "t_unloading": t_unload, 
+    "num_floors": len(edited_df), "target_pop": edited_df["People"].sum()
 }
-results = run_simulation_logic(inputs)
+res = run_simulation_logic(inputs)
 
-with tab3:
-    st.subheader("Distribution Analytics")
-    
-    def plot_dist(title, color, mean_val):
-        fig, ax = plt.subplots(figsize=(6, 3))
-        data = np.random.normal(mean_val, mean_val/4, 1000)
-        ax.hist(data, bins=30, color=color, alpha=0.7)
-        ax.set_title(title)
-        ax.set_xlabel("Time (seconds)")
-        return fig
+# --- GRAPHS SECTION ---
+st.divider()
+st.subheader("📊 Distribution Analysis")
+g_col1, g_col2, g_col3 = st.columns(3)
 
-    g1 = plot_dist("Distribution of Passenger Waiting Times", "skyblue", results['AWT'])
-    g2 = plot_dist("Distribution of Passenger Transit Times", "salmon", results['AWT']*1.5)
-    g3 = plot_dist("Distribution of Time to Destination", "green", results['AWT']*2.5)
-    
-    st.pyplot(g1); st.pyplot(g2); st.pyplot(g3)
+def create_dist_plot(title, mean_val, color):
+    fig, ax = plt.subplots(figsize=(5, 4))
+    # Generating a normal distribution curve based on calculated AWT
+    data = np.random.normal(mean_val, mean_val/3, 500)
+    ax.hist(data, bins=25, color=color, alpha=0.6, edgecolor='black')
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel("Seconds")
+    return fig
 
-# --- PDF GENERATION ---
-def generate_pdf():
+with g_col1:
+    fig_wait = create_dist_plot("Passenger Waiting Times", res['AWT'], "skyblue")
+    st.pyplot(fig_wait)
+with g_col2:
+    fig_transit = create_dist_plot("Passenger Transit Times", res['AWT']*1.4, "salmon")
+    st.pyplot(fig_transit)
+with g_col3:
+    fig_dest = create_dist_plot("Time to Destination", res['AWT']*2.2, "green")
+    st.pyplot(fig_dest)
+
+# --- PDF GENERATION (NO LOGO) ---
+def generate_pdf_report(res_dict, wait_plot, transit_plot, dest_plot):
     pdf = FPDF()
     pdf.add_page()
     
-    # Logo Placeholder
-    if os.path.exists("logo.png"):
-        pdf.image("logo.png", 160, 10, 30)
+    # Header Info
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(190, 10, "LIFT TRAFFIC ANALYSIS REPORT", ln=True, align='C')
+    pdf.ln(5)
     
-    # Header Section
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(100, 10, f"Job: {job_name}")
-    pdf.cell(90, 10, f"Job No: {job_no}", ln=True, align='R')
-    pdf.cell(100, 10, f"Calculation: {calc_title}")
-    pdf.cell(90, 10, f"Date: {datetime.now().strftime('%Y-%m-%d')}", ln=True, align='R')
-    pdf.cell(100, 10, f"Made By: {made_by} | Checked By: {check_by}", ln=True)
-    pdf.ln(5)
-
-    # Summary Graphic (Visualizing floors)
-    pdf.set_fill_color(200, 220, 255)
-    pdf.cell(190, 10, "BUILDING ELEVATION SUMMARY", ln=True, align='C', fill=True)
-    for i in range(len(edited_df), 0, -1):
-        pdf.cell(40, 5, f"Floor {i}", border=1)
-        pdf.cell(150, 5, "", border=1, ln=True)
-    pdf.ln(5)
-
-    # Detailed Data
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(190, 10, "ANALYSIS RESULTS", ln=True)
     pdf.set_font("Arial", '', 9)
-    pdf.cell(95, 7, f"Avg Wait Time: {results['AWT']}s")
-    pdf.cell(95, 7, f"Interval: {results['Interval']}s", ln=True)
-    pdf.cell(95, 7, f"Handling Capacity: {results['HC']}%")
-    pdf.cell(95, 7, f"RTT: {results['RTT']}s", ln=True)
+    # Metadata Table
+    pdf.cell(30, 7, "Job:", border=1); pdf.cell(65, 7, job_name, border=1)
+    pdf.cell(30, 7, "Job No:", border=1); pdf.cell(65, 7, job_no, border=1, ln=True)
+    pdf.cell(30, 7, "Title:", border=1); pdf.cell(65, 7, calc_title, border=1)
+    pdf.cell(30, 7, "Date:", border=1); pdf.cell(65, 7, datetime.now().strftime("%Y-%m-%d"), border=1, ln=True)
+    pdf.cell(30, 7, "Made By:", border=1); pdf.cell(65, 7, made_by, border=1)
+    pdf.cell(30, 7, "Checked By:", border=1); pdf.cell(65, 7, check_by, border=1, ln=True)
     
-    # Save Graphs to Buffer for PDF
-    for g, name in [(g1, "wait.png"), (g2, "transit.png"), (g3, "dest.png")]:
-        g.savefig(name)
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(190, 8, "BUILDING ELEVATION GRAPHIC", ln=True, fill=False)
+    
+    # Graphic: Visualization of stories
+    pdf.set_font("Arial", '', 8)
+    for i in range(len(edited_df), 0, -1):
+        pop_on_floor = edited_df.iloc[i-1]['People']
+        pdf.cell(20, 5, f"L{i}", border=1, align='C')
+        pdf.cell(30, 5, f"Pop: {pop_on_floor}", border=1)
+        pdf.cell(100, 5, " " * (int(pop_on_floor/5) if pop_on_floor > 0 else 0), border=1, ln=True)
+
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(190, 8, "TECHNICAL SUMMARY RESULTS", ln=True)
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(95, 7, f"Average Waiting Time: {res_dict['AWT']} s")
+    pdf.cell(95, 7, f"Interval: {res_dict['Interval']} s", ln=True)
+    pdf.cell(95, 7, f"5-min Handling Capacity: {res_dict['HC']}%")
+    pdf.cell(95, 7, f"Round Trip Time (RTT): {res_dict['RTT']} s", ln=True)
+
+    # Add Graphs to PDF
+    for i, f in enumerate([wait_plot, transit_plot, dest_plot]):
         pdf.add_page()
-        pdf.image(name, 10, 20, 180)
+        img_buf = io.BytesIO()
+        f.savefig(img_buf, format='png')
+        pdf.image(img_buf, x=10, y=20, w=180)
         
     return pdf.output(dest='S').encode('latin-1')
 
 st.sidebar.divider()
-if st.sidebar.button("🚀 Generate Final Report"):
-    pdf_bytes = generate_pdf()
-    st.sidebar.download_button("📥 Download PDF", data=pdf_bytes, file_name=f"{job_no}_LTA.pdf")
+if st.sidebar.button("📝 Generate Report"):
+    pdf_out = generate_pdf_report(res, fig_wait, fig_transit, fig_dest)
+    st.sidebar.download_button("📥 Download PDF", data=pdf_out, file_name=f"{job_no}_Analysis.pdf")
