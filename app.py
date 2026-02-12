@@ -4,121 +4,244 @@ import matplotlib.pyplot as plt
 import numpy as np
 from fpdf import FPDF
 from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 import io
 
-# --- 1. ACCESS CONTROL DATABASE (MANUAL UPDATE) ---
-# Each email is mapped to ONE unique code. 
-# You update this list when you receive a Stripe payment notification.
-SUBSCRIBER_DATABASE = {
-    "engineer1@company.com": "LTA-7742-XP",
-    "consultant@mep-sg.com": "LTA-9012-ZZ",
-    "test@user.com": "12345" # For your own testing
-}
+# --- 1. GOOGLE SHEETS CONNECTION (unchanged) ---
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-PAYMENT_URL = "https://buy.stripe.com/your_link_for_59_99"
+def get_subscriber_data():
+    try:
+        url = "https://docs.google.com/spreadsheets/d/your_sheet_id_here/edit#gid=0"
+        df = conn.read(spreadsheet=url, ttl="1m")
+        return pd.Series(df.AccessKey.values, index=df.Email).to_dict()
+    except Exception:
+        return {}
 
-# --- 2. LTA CALCULATION ENGINE ---
+# --- 2. ACCELERATION‑BASED TRAVEL TIME ---
+def travel_time(distance, speed, accel, jerk, use_accel):
+    """Time to travel a distance (m) with given speed, acceleration, jerk."""
+    if not use_accel or distance <= 0:
+        return distance / speed if speed > 0 else 0
+    # Simplified motion profile: accelerate to max speed if possible, else triangle
+    d_acc = speed**2 / (2 * accel)          # distance to reach full speed (ignoring jerk)
+    if distance < 2 * d_acc:
+        # Triangle: accelerate half, decelerate half
+        return 2 * np.sqrt(distance / accel)
+    else:
+        # Trapezoid: accel + cruise + decel
+        t_acc = speed / accel
+        t_cruise = (distance - 2 * d_acc) / speed
+        return 2 * t_acc + t_cruise
+
+# --- 3. EXPECTED STOPS & HIGHEST REVERSAL FLOOR ---
+def expected_stops_and_highest(pop_per_floor, total_passengers):
+    """
+    Compute expected number of stops and expected highest reversal floor
+    given the population distribution per floor.
+    pop_per_floor : list of integers (number of passengers destined to each floor)
+    total_passengers : sum of pop_per_floor
+    """
+    n = len(pop_per_floor)
+    if total_passengers == 0:
+        return 0, 0
+
+    # Probability that a given passenger goes to floor i
+    prob_floor = [pop / total_passengers for pop in pop_per_floor]
+
+    # Expected number of stops
+    s_prob = sum(1 - (1 - prob_floor[i])**total_passengers for i in range(n))
+
+    # Expected highest reversal floor (1‑based index)
+    cum_prob_up_to = 0.0
+    h_prob = 0.0
+    for i in range(n):
+        cum_prob_up_to += prob_floor[i]
+        h_prob += 1 - (cum_prob_up_to - prob_floor[i])**total_passengers
+
+    return s_prob, h_prob
+
+# --- 4. MAIN LTA LOGIC (now complete) ---
 def run_lta_logic(inputs):
-    p, n, v = inputs['target_pop'], inputs['num_floors'], inputs['speed']
-    if p <= 0 or n <= 0: return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0}
+    # Unpack inputs
+    p           = inputs['target_pop']          # total population in zone
+    n_floors    = inputs['num_floors']         # number of floors served
+    speed       = inputs['speed']              # m/s
+    car_cap     = inputs['car_capacity']       # persons
+    floor_h     = inputs['floor_height']       # m
+    tp          = inputs['passenger_time']     # s per person
+    door_cycle  = inputs['t_open'] + inputs['t_dwell'] + inputs['t_close']
+    zone_start  = inputs['zone_start_floor']   # 1‑based (main terminal for low zone)
+    use_accel   = inputs['use_accel_model']
+    accel       = inputs['acceleration']
+    jerk        = inputs['jerk']
+    pop_per_floor = inputs['pop_per_floor']    # list of length n_floors
 
-    # CIBSE Guide D logic
-    s_prob = n * (1 - (1 - 1/n)**p)
-    h_prob = n - sum([(i/n)**p for i in range(1, n)])
-    t_cycle = inputs['t_open'] + inputs['t_close'] + inputs['t_dwell'] + inputs['t_load'] + inputs['t_unload']
-    
-    express_jump = 0
-    if inputs['is_high_zone']:
-        # High zone skips 50% of the building height
-        express_jump = ((inputs['total_bldg_floors'] / 2) * 3.5) / v
-    
-    rtt = (2 * h_prob * (3.5/v)) + ((s_prob + 1) * t_cycle) + (2 * p * inputs['t_load']) + (2 * express_jump)
+    # 1. Expected stops & highest reversal floor (using actual distribution)
+    s_prob, h_prob = expected_stops_and_highest(pop_per_floor, p)
+    if s_prob == 0:
+        return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0, "HC_persons": 0}
+
+    # 2. Travel distance (round trip) – zone start to highest floor and back
+    travel_dist = 2 * (h_prob - zone_start) * floor_h
+
+    # 3. Travel time (with or without acceleration model)
+    travel_t = travel_time(travel_dist, speed, accel, jerk, use_accel)
+
+    # 4. RTT components
+    total_stops = s_prob + 1                  # +1 for boarding stop at zone start
+    passenger_time = 2 * p * tp               # boarding + alighting
+    rtt = travel_t + total_stops * door_cycle + passenger_time
+
+    # 5. Interval, AWT (0.7 rule of thumb), Handling Capacity
     interval = rtt / inputs['num_elevators']
-    awt = interval * 0.7 
-    
+    awt = interval * 0.7
+
+    hc_persons = (car_cap * inputs['num_elevators'] * 300) / interval
+    hc_percent = (hc_persons / p) * 100 if p > 0 else 0
+
     return {
-        "RTT": round(rtt, 2), "Interval": round(interval, 2),
-        "AWT": round(awt, 2), "HC": round((300 * inputs['num_elevators'] * p) / rtt, 2)
+        "RTT": round(rtt, 2),
+        "Interval": round(interval, 2),
+        "AWT": round(awt, 2),
+        "HC": round(hc_percent, 2),
+        "HC_persons": round(hc_persons, 2)
     }
 
-# --- 3. UI LAYOUT ---
+# --- 5. BENCHMARK TARGET HC (by building type) ---
+def get_target_hc(building_type):
+    targets = {
+        "Office": 13,        # 12‑15% typical
+        "Residential": 7,    # 6‑8%
+        "Hotel": 9,          # 8‑10%
+        "Hospital": 11       # 10‑12%
+    }
+    return targets.get(building_type, 10)
+
+# --- 6. UI LAYOUT ---
 st.set_page_config(page_title="LTA Pro Suite", layout="wide")
 
-# Sidebar: Monetization
+# --- SIDEBAR (subscription, unchanged) ---
 st.sidebar.title("🔐 Pro Access")
 st.sidebar.write("Monthly License: **$59.99 USD**")
-st.sidebar.markdown(f'''<a href="{PAYMENT_URL}" target="_blank">
+st.sidebar.markdown(f'''<a href="https://buy.stripe.com/your_link" target="_blank">
     <button style="width:100%;background-color:#1db954;color:white;border:none;padding:12px;border-radius:5px;font-weight:bold;cursor:pointer;">
         PAY NOW TO GET ACCESS CODE
     </button></a>''', unsafe_allow_html=True)
 
 st.sidebar.divider()
-user_email = st.sidebar.text_input("Enter Registered Email")
+user_email = st.sidebar.text_input("Registered Email").strip().lower()
 user_code = st.sidebar.text_input("Enter Unique Access Code", type="password")
 
-# Validation Logic
+subscribers = get_subscriber_data()
 is_pro = False
-if user_email in SUBSCRIBER_DATABASE:
-    if SUBSCRIBER_DATABASE[user_email] == user_code:
+if user_email in subscribers:
+    if str(subscribers[user_email]) == user_code:
         is_pro = True
         st.sidebar.success("✅ Pro Access Active")
     else:
-        st.sidebar.error("❌ Invalid Code for this Email")
+        st.sidebar.error("❌ Invalid Code")
+elif user_email != "":
+    st.sidebar.warning("📧 Email not found in subscriber list.")
 
-# Report Headers
 st.sidebar.divider()
-st.sidebar.header("📋 Report Headers")
-st_title = st.sidebar.text_input("LTA Title", "Peak Hour Analysis")
-st_job = st.sidebar.text_input("Project Name", "High-Rise Alpha")
-st_no = st.sidebar.text_input("Job Number", "2026-VT-001")
+st.sidebar.header("📋 Report Details")
+st_title = st.sidebar.text_input("LTA Title", "Morning Peak Study")
+st_job = st.sidebar.text_input("Project Name", "High-Rise Project")
+st_no = st.sidebar.text_input("Job Number", "2026-VT-01")
 st_user = st.sidebar.text_input("Creator", "Yaw Keong")
 
+# --- MAIN INTERFACE ---
 st.title("🏗️ Professional Lift Traffic Analysis")
 
-# --- 4. BUILDING & ELEVATOR INPUTS ---
+# --- COLUMN 1 : BUILDING & ZONE ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("🏢 Building Specification")
-    b_type = st.selectbox("Building Type", ["Office (Prestige)", "Office (Standard)", "Residential (HDB/Private)", "Hotel", "Hospital"])
+    st.subheader("🏢 Building & Zone")
+    b_type = st.selectbox("Building Type", ["Office", "Residential", "Hotel", "Hospital"])
     total_floors = st.number_input("Total Building Stories", min_value=1, value=12)
-    
-    # Zone Selection Logic (Enabled only for 35+ floors)
+    floor_height = st.number_input("Floor‑to‑floor height (m)", min_value=2.0, max_value=6.0, value=3.5, step=0.1)
+
+    # Zone selection
     zone_selection = "Single Zone"
+    zone_start_floor = 1   # default for low / single zone
     if total_floors >= 35:
         zone_selection = st.radio("Select Zone", ["Low Zone", "High Zone"], horizontal=True)
-    else:
-        st.info("Zoning disabled for buildings under 35 floors.")
+        if zone_selection == "High Zone":
+            zone_start_floor = st.number_input(
+                "Zone start floor (sky lobby)",
+                min_value=2, max_value=total_floors-1,
+                value=int(total_floors/2)+1
+            )
 
-    pop_method = st.radio("Population Entry", ["Bulk Population", "By Floor Individual"])
-    if pop_method == "Bulk Population":
-        target_pop = st.number_input("Total Population in Zone", value=400)
-        served_floors = st.number_input("Floors Served", value=total_floors)
+    # Population input method
+    pop_method = st.radio("Population Input", ["Bulk", "Individual Floor"])
+    if pop_method == "Bulk":
+        target_pop = st.number_input("Population in this zone", min_value=1, value=400)
+        served_floors = st.number_input("Floors served in this zone", min_value=1, value=total_floors if zone_selection=="Low Zone" else total_floors-zone_start_floor+1)
+        # For uniform distribution, assume equal population per floor
+        pop_per_floor = [target_pop / served_floors] * served_floors
     else:
-        df_pop = st.data_editor(pd.DataFrame({"Floor": [f"L{i}" for i in range(1, total_floors+1)], "Pop": [30]*total_floors}), num_rows="dynamic")
-        target_pop = df_pop["Pop"].sum()
-        served_floors = len(df_pop)
+        # Individual floor editor – shows all floors, but user may restrict to zone? 
+        # For simplicity we let user enter population for every floor; 
+        # we will sum only those >= zone_start_floor.
+        st.caption("Enter population for **each floor** (zone start and above).")
+        df_pop = st.data_editor(
+            pd.DataFrame({"Floor": [f"L{i}" for i in range(1, total_floors+1)], "Pop": [0]*total_floors}),
+            num_rows="dynamic",
+            key="pop_editor"
+        )
+        # Filter floors in zone
+        df_zone = df_pop[df_pop["Floor"].str[1:].astype(int) >= zone_start_floor]
+        target_pop = df_zone["Pop"].sum()
+        served_floors = len(df_zone)
+        pop_per_floor = df_zone["Pop"].tolist()
 
+# --- COLUMN 2 : ELEVATOR SETUP ---
 with col2:
     st.subheader("🚠 Elevator Setup")
     l_config = st.selectbox("Configuration", ["Simplex (1)", "Duplex (2)", "Triplex (3)"])
     num_lifts = int(l_config.split('(')[1].replace(')', ''))
-    speed = st.number_input("Rated Speed (m/s)", value=1.6 if total_floors < 20 else 3.5, step=0.5)
-    
-    with st.expander("Mechanical Timings"):
-        t_open = st.number_input("Door Open (s)", value=4.5)
-        t_close = st.number_input("Door Close (s)", value=4.5)
-        t_dwell = st.number_input("Door Dwell (s)", value=3.0)
-        t_load = st.number_input("Loading Time (s)", value=0.5)
-        t_unload = st.number_input("Unloading Time (s)", value=1.3)
+    speed = st.number_input("Rated Speed (m/s)", min_value=0.5, value=1.6 if total_floors < 20 else 3.5, step=0.1)
+    car_capacity = st.number_input("Car Capacity (persons)", min_value=4, max_value=26, value=13, step=1)
 
-# Calculate
-res = run_lta_logic({
-    "num_elevators": num_lifts, "speed": speed, "total_bldg_floors": total_floors,
-    "num_floors": served_floors, "target_pop": target_pop, "is_high_zone": (zone_selection == "High Zone"),
-    "t_open": t_open, "t_close": t_close, "t_dwell": t_dwell, "t_load": t_load, "t_unload": t_unload
-})
+    with st.expander("🚪 Door & Passenger Timings"):
+        t_open = st.number_input("Door Open (s)", min_value=0.5, value=4.5, step=0.1)
+        t_close = st.number_input("Door Close (s)", min_value=0.5, value=4.5, step=0.1)
+        t_dwell = st.number_input("Door Dwell (s)", min_value=0.0, value=3.0, step=0.1)
+        tp = st.number_input("Passenger transfer time (s per person)", min_value=0.3, value=0.8, step=0.1, help="Time for one passenger to board or alight")
 
-# --- 5. RESULTS & GRAPHS ---
+    with st.expander("⚙️ Advanced Travel Time"):
+        use_accel = st.checkbox("Use acceleration / jerk model", value=False)
+        col_acc1, col_acc2 = st.columns(2)
+        with col_acc1:
+            accel = st.number_input("Acceleration (m/s²)", min_value=0.5, max_value=2.0, value=1.0, step=0.1, disabled=not use_accel)
+        with col_acc2:
+            jerk = st.number_input("Jerk (m/s³)", min_value=0.5, max_value=2.0, value=1.0, step=0.1, disabled=not use_accel)
+
+# --- PREPARE INPUT DICTIONARY ---
+inputs = {
+    "num_elevators": num_lifts,
+    "speed": speed,
+    "car_capacity": car_capacity,
+    "floor_height": floor_height,
+    "passenger_time": tp,
+    "t_open": t_open,
+    "t_close": t_close,
+    "t_dwell": t_dwell,
+    "zone_start_floor": zone_start_floor,
+    "target_pop": target_pop,
+    "num_floors": served_floors,
+    "pop_per_floor": pop_per_floor,
+    "use_accel_model": use_accel,
+    "acceleration": accel if use_accel else 1.0,
+    "jerk": jerk if use_accel else 1.0
+}
+
+# --- RUN CALCULATIONS ---
+res = run_lta_logic(inputs)
+
+# --- DISPLAY RESULTS ---
 st.divider()
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("RTT", f"{res['RTT']}s")
@@ -126,21 +249,29 @@ c2.metric("Interval", f"{res['Interval']}s")
 
 if is_pro:
     c3.metric("Avg Wait Time (AWT)", f"{res['AWT']}s")
-    c4.metric("Handling Cap", f"{res['HC']}%")
+    c4.metric("Handling Capacity", f"{res['HC']}%")
 else:
     c3.warning("AWT: $59.99 Only")
     c4.warning("HC: $59.99 Only")
 
-st.subheader("📊 Traffic Distribution (AWT Graph)")
-# Graph is visible to everyone as a "teaser" of the app's power
+# --- BENCHMARK (Pro only) ---
+if is_pro:
+    target_hc = get_target_hc(b_type)
+    st.subheader("📈 Performance against Benchmark")
+    if res['HC'] >= target_hc:
+        st.success(f"✅ Handling Capacity **{res['HC']}%** meets/exceeds {b_type} benchmark ({target_hc}%)")
+    else:
+        st.error(f"❌ Handling Capacity **{res['HC']}%** below {b_type} benchmark ({target_hc}%) – consider more / faster lifts")
+
+# --- DISTRIBUTION GRAPH (AWT histogram) ---
+st.subheader("📊 Traffic Distribution (AWT)")
 fig, ax = plt.subplots(figsize=(8, 3))
 data = np.random.normal(res['AWT'], res['AWT']/4, 500)
 ax.hist(data, bins=30, color='#1db954', edgecolor='black', alpha=0.7)
-ax.set_title(f"Wait Time Probability for {b_type}")
-ax.set_xlabel("Wait Time (Seconds)")
+ax.set_title(f"Wait Time Probabilities: {b_type}")
 st.pyplot(fig)
 
-# PDF Generation (PRO Only)
+# --- PRO PDF EXPORT (unchanged, but can be extended) ---
 if is_pro:
     if st.button("📥 Generate Pro PDF Report"):
         pdf = FPDF()
@@ -153,8 +284,10 @@ if is_pro:
         pdf.ln(10)
         pdf.set_font("Arial", 'B', 12); pdf.cell(190, 10, "TECHNICAL SUMMARY", ln=True)
         pdf.set_font("Arial", '', 10)
-        pdf.cell(95, 8, f"Avg Waiting Time: {res['AWT']}s", border=1); pdf.cell(95, 8, f"Interval: {res['Interval']}s", border=1, ln=True)
+        pdf.cell(95, 8, f"Avg Waiting Time: {res['AWT']}s", border=1)
+        pdf.cell(95, 8, f"Interval: {res['Interval']}s", border=1, ln=True)
         pdf.cell(95, 8, f"Handling Capacity: {res['HC']}%", border=1, ln=True)
-        st.download_button("Download Now", data=pdf.output(dest='S').encode('latin-1'), file_name=f"{st_no}_LTA.pdf")
+        pdf.cell(95, 8, f"5‑min HC (persons): {res['HC_persons']}", border=1, ln=True)
+        st.download_button("Download PDF", data=pdf.output(dest='S').encode('latin-1'), file_name=f"{st_no}_LTA.pdf")
 else:
-    st.error("⚠️ Monthly Payment Required for Full Metrics & PDF Exports.")
+    st.error("⚠️ Monthly Payment Required for Full Metrics & PDF Reports.")
