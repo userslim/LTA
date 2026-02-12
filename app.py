@@ -30,7 +30,6 @@ def travel_time(distance, speed, accel, jerk, use_accel):
     if not use_accel or distance <= 0 or speed <= 0:
         return distance / speed if speed > 0 else 0
     
-    # Simple Kinematic check: Distance to reach full speed
     d_acc = (speed**2) / (2 * accel)
     if distance < 2 * d_acc:
         return 2 * np.sqrt(distance / accel)
@@ -45,11 +44,9 @@ def expected_stops_and_highest(pop_per_floor, total_passengers):
     if total_passengers <= 0 or n == 0:
         return 0, 0
     
-    # Industry Standard: Probabilistic model for stops (S) and Reversal Floor (H)
     prob_floor = [pop / total_passengers for pop in pop_per_floor]
     s_prob = sum(1 - (1 - p)**total_passengers for p in prob_floor)
     
-    # Highest Reversal Floor (H) Calculation
     h_prob = 0.0
     cum_prob = 0.0
     for i in range(n):
@@ -72,17 +69,14 @@ def run_lta_logic(inputs):
     if s_prob <= 0 or speed <= 0:
         return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0, "HC_persons": 0}
 
-    # Travel Time: Express jump to sky lobby + floor-to-floor transit
-    # distance to reversal floor minus the starting floor
     dist_m = (h_prob - 1) * inputs['floor_height'] 
     travel_t = travel_time(2 * dist_m, speed, inputs['acceleration'], inputs['jerk'], inputs['use_accel_model'])
 
-    # Total RTT = Travel Time + Door cycles + Passenger boarding/exiting
     rtt = travel_t + ((s_prob + 1) * door_cycle) + (2 * p * tp)
     interval = rtt / inputs['num_elevators']
     awt = interval * 0.7
 
-    hc_persons = (car_cap * 0.8 * inputs['num_elevators'] * 300) / interval # 80% load factor
+    hc_persons = (car_cap * 0.8 * inputs['num_elevators'] * 300) / interval
     hc_percent = (hc_persons / p) * 100 if p > 0 else 0
 
     return {
@@ -121,7 +115,8 @@ st.title("🏗️ Professional Lift Traffic Analysis")
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("🏢 Building & Zone")
-    b_type = st.selectbox("Building Type", ["Office", "Residential", "Hotel", "Hospital"])
+    # --- ADDED "Multi Storey Carpark" TO SELECTBOX ---
+    b_type = st.selectbox("Building Type", ["Office", "Residential", "Hotel", "Hospital", "Multi Storey Carpark"])
     total_floors = st.number_input("Total Floors", min_value=1, value=12)
     floor_h = st.number_input("Floor Height (m)", value=3.5)
 
@@ -177,11 +172,19 @@ if is_pro:
     m3.metric("AWT", f"{res['AWT']}s")
     m4.metric("Handling Cap", f"{res['HC']}%")
     
-    # Benchmarking
-    targets = {"Office": 13, "Residential": 7, "Hotel": 9, "Hospital": 11}
+    # --- ADDED BENCHMARK FOR MULTI STOREY CARPARK ---
+    targets = {
+        "Office": 13, 
+        "Residential": 7, 
+        "Hotel": 9, 
+        "Hospital": 11,
+        "Multi Storey Carpark": 6   # Typical handling capacity target for car parks
+    }
     target = targets.get(b_type, 10)
-    if res['HC'] >= target: st.success(f"✅ Meets {b_type} benchmark ({target}%)")
-    else: st.error(f"❌ Below {b_type} benchmark ({target}%)")
+    if res['HC'] >= target: 
+        st.success(f"✅ Meets {b_type} benchmark ({target}%)")
+    else: 
+        st.error(f"❌ Below {b_type} benchmark ({target}%)")
 else:
     m3.warning("AWT: $59.99 Only")
     m4.warning("HC: $59.99 Only")
@@ -194,7 +197,7 @@ if res['AWT'] > 0:
     ax.hist(data, bins=30, color='#1db954', edgecolor='black', alpha=0.7)
     st.pyplot(fig)
 
-# PDF Export (using fpdf2 logic)
+# PDF Export
 if is_pro and st.button("📥 Download Pro Report"):
     pdf = FPDF()
     pdf.add_page()
@@ -206,6 +209,5 @@ if is_pro and st.button("📥 Download Pro Report"):
     pdf.cell(0, 10, f"Resulting AWT: {res['AWT']}s", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 10, f"Handling Capacity: {res['HC']}%", new_x="LMARGIN", new_y="NEXT")
     
-    # Correct way to handle bytes for Streamlit download
     pdf_bytes = pdf.output() 
     st.download_button("Click to Download", data=pdf_bytes, file_name=f"{st_no}_LTA.pdf", mime="application/pdf")
