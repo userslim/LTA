@@ -11,7 +11,6 @@ def travel_time(distance, speed, accel, jerk, use_accel):
     if not use_accel or distance <= 0 or speed <= 0:
         return distance / speed if speed > 0 else 0
     
-    # Kinematic calculation for time to cover distance with acceleration limits
     d_acc = (speed**2) / (2 * accel)
     if distance < 2 * d_acc:
         return 2 * np.sqrt(distance / accel)
@@ -20,7 +19,7 @@ def travel_time(distance, speed, accel, jerk, use_accel):
         t_cruise = (distance - 2 * d_acc) / speed
         return (2 * t_acc) + t_cruise
 
-# --- 2. EXPECTED STOPS & HIGHEST REVERSAL FLOOR (Barney/CIBSE) ---
+# --- 2. EXPECTED STOPS & HIGHEST REVERSAL FLOOR ---
 def expected_stops_and_highest(pop_per_floor, total_passengers):
     n = len(pop_per_floor)
     if total_passengers <= 0 or n == 0:
@@ -52,13 +51,12 @@ def run_lta_logic(inputs):
     if s_prob <= 0 or speed <= 0:
         return {"RTT": 0, "Interval": 0, "AWT": 0, "HC": 0, "HC_persons": 0}
 
-    # Calculation of RTT components
     dist_m = (h_prob - 1) * inputs['floor_height'] 
     travel_t = travel_time(2 * dist_m, speed, inputs['acceleration'], inputs['jerk'], inputs['use_accel_model'])
 
     rtt = travel_t + ((s_prob + 1) * door_cycle) + (2 * p * tp)
     interval = rtt / num_lifts
-    awt = interval * 0.7  # Industry standard approximation for AWT
+    awt = interval * 0.7 
 
     hc_persons = (car_cap * 0.8 * num_lifts * 300) / interval
     hc_percent = (hc_persons / p) * 100 if p > 0 else 0
@@ -76,12 +74,10 @@ def get_suggestions(current_res, inputs, target_awt=54.0):
     if current_res['AWT'] <= target_awt:
         return ["✅ Current configuration meets the 54s AWT target."]
 
-    # Lifts Suggestion
     required_lifts = int(np.ceil(current_res['RTT'] / target_interval))
     if required_lifts > inputs['num_elevators']:
         suggestions.append(f"🚀 **Elevators:** Increase count to **{required_lifts}** lifts.")
 
-    # Speed/Efficiency Heuristic
     required_rtt = target_interval * inputs['num_elevators']
     time_to_save = current_res['RTT'] - required_rtt
     if time_to_save > 0:
@@ -92,13 +88,11 @@ def get_suggestions(current_res, inputs, target_awt=54.0):
 # --- 5. UI SETUP ---
 st.set_page_config(page_title="LTA Pro Suite", layout="wide")
 
-# Sidebar: Support
 st.sidebar.title("☕ Support Me")
 paypal_url = "https://www.paypal.com/paypalme/YOUR_USERNAME" 
 st.sidebar.markdown(f'''<a href="{paypal_url}" target="_blank"><button style="width:100%;background-color:#0070BA;color:white;border:none;padding:12px;border-radius:5px;font-weight:bold;cursor:pointer;">Donate via PayPal</button></a>''', unsafe_allow_html=True)
 st.sidebar.divider()
 
-# Project Info
 st.sidebar.header("📋 Project Details")
 st_title = st.sidebar.text_input("Report Title", "Morning Peak Analysis")
 st_job = st.sidebar.text_input("Project Name", "Alpha Tower")
@@ -132,8 +126,11 @@ with col1:
 
 with col2:
     st.subheader("🚠 Elevator Setup")
-    l_config = st.selectbox("Configuration", ["Simplex (1)", "Duplex (2)", "Triplex (3)", "Quadruplex (4)"])
+    # --- UPDATED LIFT SELECTION TO 10 ---
+    lift_options = [f"Group of {i} ({i})" for i in range(1, 11)]
+    l_config = st.selectbox("Configuration", lift_options, index=1) # Defaults to Duplex (2)
     num_lifts = int(l_config.split('(')[1].replace(')', ''))
+    
     speed = st.number_input("Rated Speed (m/s)", value=1.6)
     car_cap = st.number_input("Car Capacity (persons)", value=13)
 
@@ -155,7 +152,7 @@ res = run_lta_logic({
     "use_accel_model": use_accel, "acceleration": accel, "jerk": jerk
 })
 
-# Metrics Display
+# Metrics
 st.divider()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("RTT", f"{res['RTT']}s")
@@ -163,7 +160,7 @@ m2.metric("Interval", f"{res['Interval']}s")
 m3.metric("AWT", f"{res['AWT']}s")
 m4.metric("Handling Cap", f"{res['HC']}%")
 
-# Optimization Logic
+# Optimization Box
 st.subheader("🎯 Optimization Engine (Target AWT: 54s)")
 if res['AWT'] > 54.0:
     with st.container(border=True):
@@ -172,6 +169,9 @@ if res['AWT'] > 54.0:
         for tip in tips: st.write(tip)
 else:
     st.success("Target AWT Achieved!")
+
+# Visualizing Lifts
+
 
 # Graphing
 fig, ax = plt.subplots(figsize=(8, 3))
@@ -182,8 +182,6 @@ if res['AWT'] > 0:
     ax.axvline(res['AWT'], color='red', linestyle='dashed', linewidth=1.5, label=f"Average: {res['AWT']}s")
     ax.legend()
     st.pyplot(fig)
-
-
 
 # PDF Exporting
 if st.button("📥 Generate & Download Report"):
@@ -197,7 +195,6 @@ if st.button("📥 Generate & Download Report"):
         pdf.cell(0, 8, f"Project: {st_job} | Job No: {st_no} | Creator: {st_user}", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(10)
 
-        # Results Table
         pdf.set_font("helvetica", 'B', 12)
         pdf.cell(0, 10, "Summary Results", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("helvetica", size=10)
@@ -205,7 +202,6 @@ if st.button("📥 Generate & Download Report"):
             pdf.cell(50, 8, label, border=1)
             pdf.cell(50, 8, val, border=1, new_x="LMARGIN", new_y="NEXT")
         
-        # Save Plot to temp
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig.savefig(tmp.name, format="png", dpi=100)
             tmp_path = tmp.name
@@ -216,7 +212,6 @@ if st.button("📥 Generate & Download Report"):
         pdf.image(tmp_path, x=15, w=170)
         os.remove(tmp_path)
 
-        # Output fix
         pdf_out = pdf.output()
         pdf_bytes = bytes(pdf_out) if not isinstance(pdf_out, str) else pdf_out.encode('latin-1')
 
