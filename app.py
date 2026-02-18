@@ -232,4 +232,9 @@ if st.button("📥 Download Report PDF"):
         st.download_button(
             label="Click to Save PDF",
             data=pdf_bytes,
-            file_name=f"{st_
+            file_name=f"{st_no}_LTA.pdf",
+            mime="application/pdf"
+        )
+        
+    except Exception as e:
+        st.error(f"Error generating PDF: {e}")
