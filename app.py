@@ -3,8 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from fpdf import FPDF
-from datetime import datetime
-import io
+import tempfile
+import os
 
 # --- 1. ACCELERATION‑BASED TRAVEL TIME ---
 def travel_time(distance, speed, accel, jerk, use_accel):
@@ -42,9 +42,11 @@ def run_lta_logic(inputs):
     car_cap = inputs['car_capacity']
     tp = inputs['passenger_time']
     door_cycle = inputs['t_open'] + inputs['t_dwell'] + inputs['t_close']
-    zone_start = inputs['zone_start_floor']
+    
+    # Fix: Ensure non-zero values to avoid division by zero
+    if inputs['num_elevators'] == 0: inputs['num_elevators'] = 1
+    
     pop_per_floor = inputs['pop_per_floor']
-
     s_prob, h_prob = expected_stops_and_highest(pop_per_floor, p)
     
     if s_prob <= 0 or speed <= 0:
@@ -68,24 +70,21 @@ def run_lta_logic(inputs):
 # --- 4. UI SETUP ---
 st.set_page_config(page_title="LTA Pro Suite", layout="wide")
 
-# --- SIDEBAR: PAYPAL LINK (DONATION) ---
+# Sidebar: Donation Link
 st.sidebar.title("☕ Support Me")
-# REPLACE THE URL BELOW WITH YOUR ACTUAL PAYPAL LINK
-paypal_url = "https://www.paypal.com/ncp/payment/RUPD9EAL4MPFA" 
-
+paypal_url = "https://www.paypal.com/paypalme/YOUR_USERNAME" 
 st.sidebar.markdown(f'''
     <a href="{paypal_url}" target="_blank">
     <button style="width:100%;background-color:#0070BA;color:white;border:none;padding:12px;border-radius:5px;font-weight:bold;cursor:pointer;">
         Donate via PayPal
     </button></a>
     ''', unsafe_allow_html=True)
-
-st.sidebar.info("This tool is free to use. Donations are appreciated!")
+st.sidebar.info("This tool is free to use. Donations help keep it running!")
 st.sidebar.divider()
 
-# Report Details
+# Report Headers
 st.sidebar.header("📋 Report Headers")
-st_title = st.sidebar.text_input("LTA Title", "Morning Peak Analysis")
+st_title = st.sidebar.text_input("Report Title", "Morning Peak Analysis")
 st_job = st.sidebar.text_input("Project Name", "New Building")
 st_no = st.sidebar.text_input("Job No", "2026-01")
 st_user = st.sidebar.text_input("Creator", "Yaw Keong")
@@ -141,7 +140,7 @@ res = run_lta_logic({
     "acceleration": accel, "jerk": jerk
 })
 
-# Display Metrics (ALL UNLOCKED)
+# Display Metrics
 st.divider()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("RTT", f"{res['RTT']}s")
@@ -150,55 +149,87 @@ m3.metric("AWT", f"{res['AWT']}s")
 m4.metric("Handling Cap", f"{res['HC']}%")
 
 # Benchmarking
-targets = {
-    "Office": 13, 
-    "Residential": 7, 
-    "Hotel": 9, 
-    "Hospital": 11,
-    "Multi Storey Carpark": 6
-}
+targets = {"Office": 13, "Residential": 7, "Hotel": 9, "Hospital": 11, "Multi Storey Carpark": 6}
 target = targets.get(b_type, 10)
 if res['HC'] >= target: 
     st.success(f"✅ Meets {b_type} benchmark ({target}%)")
 else: 
     st.error(f"❌ Below {b_type} benchmark ({target}%)")
 
-# Distribution Graph (UNLOCKED)
+# --- GRAPH GENERATION ---
+fig, ax = plt.subplots(figsize=(8, 4))
 if res['AWT'] > 0:
     st.subheader("📊 Wait Time Distribution")
-    fig, ax = plt.subplots(figsize=(8, 3))
-    # Simple normal distribution simulation for visual
+    # Simulate data for visualization
     data = np.random.normal(res['AWT'], res['AWT']/4 if res['AWT'] > 0 else 1, 500)
     ax.hist(data, bins=30, color='#0070BA', edgecolor='black', alpha=0.7)
+    ax.set_title(f"Wait Time Distribution (Avg: {res['AWT']}s)")
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Frequency")
     st.pyplot(fig)
 
-# PDF Export (UNLOCKED)
+# --- PDF EXPORT (FIXED) ---
 if st.button("📥 Download Report PDF"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", 'B', 16)
-    pdf.cell(0, 10, st_title, center=True, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("helvetica", size=10)
-    pdf.cell(0, 10, f"Project: {st_job} | Job No: {st_no} | Creator: {st_user}", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(10)
-    
-    # Add Building Details to PDF
-    pdf.set_font("helvetica", 'B', 12)
-    pdf.cell(0, 10, "Building Parameters", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("helvetica", size=10)
-    pdf.cell(0, 6, f"Type: {b_type}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Floors: {total_floors} (Zone Start: {zone_start})", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Population: {int(target_pop)}", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
+    try:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("helvetica", 'B', 16)
+        pdf.cell(0, 10, st_title, center=True, new_x="LMARGIN", new_y="NEXT")
+        
+        pdf.set_font("helvetica", size=10)
+        pdf.cell(0, 10, f"Project: {st_job} | Job No: {st_no} | Creator: {st_user}", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
 
-    # Add Results to PDF
-    pdf.set_font("helvetica", 'B', 12)
-    pdf.cell(0, 10, "Traffic Analysis Results", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("helvetica", size=10)
-    pdf.cell(0, 6, f"Round Trip Time (RTT): {res['RTT']} s", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Interval: {res['Interval']} s", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Average Waiting Time (AWT): {res['AWT']} s", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Handling Capacity: {res['HC']} %", new_x="LMARGIN", new_y="NEXT")
-    
-    pdf_bytes = pdf.output(dest='S').encode('latin-1') 
-    st.download_button("Click to Save PDF", data=pdf_bytes, file_name=f"{st_no}_LTA.pdf", mime="application/pdf")
+        # Building Parameters
+        pdf.set_font("helvetica", 'B', 12)
+        pdf.cell(0, 10, "Building Parameters", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("helvetica", size=10)
+        pdf.cell(0, 6, f"Type: {b_type}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Floors: {total_floors} (Zone Start: {zone_start})", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Population: {int(target_pop)}", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
+
+        # Results
+        pdf.set_font("helvetica", 'B', 12)
+        pdf.cell(0, 10, "Traffic Analysis Results", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("helvetica", size=10)
+        pdf.cell(0, 6, f"Round Trip Time (RTT): {res['RTT']} s", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Interval: {res['Interval']} s", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Average Waiting Time (AWT): {res['AWT']} s", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Handling Capacity: {res['HC']} %", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
+
+        # --- INSERT GRAPH INTO PDF ---
+        if res['AWT'] > 0:
+            pdf.set_font("helvetica", 'B', 12)
+            pdf.cell(0, 10, "Wait Time Graph", new_x="LMARGIN", new_y="NEXT")
+            
+            # Save plot to a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                fig.savefig(tmpfile.name, format="png", dpi=100)
+                tmpfile_path = tmpfile.name
+            
+            # Embed image (width=180mm)
+            pdf.image(tmpfile_path, x=15, w=180)
+            
+            # Clean up temp file
+            os.remove(tmpfile_path)
+
+        # --- FIX FOR ATTRIBUTE ERROR ---
+        # We use a bytearray approach compatible with most FPDF versions
+        # output() with no args usually returns string (old) or bytearray (new)
+        # We try to get bytes safely.
+        
+        pdf_out = pdf.output()
+        
+        # If the library returns a string (Old FPDF), encode it. 
+        # If it returns bytes/bytearray (New FPDF2), leave it alone.
+        if isinstance(pdf_out, str):
+            pdf_bytes = pdf_out.encode('latin-1')
+        else:
+            pdf_bytes = bytes(pdf_out)
+
+        st.download_button(
+            label="Click to Save PDF",
+            data=pdf_bytes,
+            file_name=f"{st_
