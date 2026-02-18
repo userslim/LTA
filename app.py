@@ -5,6 +5,7 @@ import numpy as np
 from fpdf import FPDF
 import tempfile
 import os
+from datetime import time
 
 # --- 1. KINEMATIC & TRAFFIC LOGIC ---
 def travel_time(distance, speed, accel, jerk):
@@ -31,12 +32,9 @@ def expected_stops_and_highest(pop_per_floor, total_passengers):
 
 def run_lta_logic(inputs):
     p = inputs['target_pop']
-    # Total Door Cycle from your provided parameter list
     door_cycle = (inputs['t_open'] + inputs['t_close'] + 
                   inputs['t_dwell_1'] + inputs['t_dwell_2'] + 
                   inputs['t_pre_open'])
-    
-    # Equipment Delays
     delays = inputs['start_delay'] + inputs['level_delay']
     
     s_prob, h_prob = expected_stops_and_highest(inputs['pop_per_floor'], p)
@@ -45,7 +43,6 @@ def run_lta_logic(inputs):
     dist_m = (h_prob - 1) * inputs['floor_height'] 
     travel_t = travel_time(2 * dist_m, inputs['speed'], inputs['acceleration'], inputs['jerk'])
 
-    # RTT Calculation
     rtt = travel_t + ((s_prob + 1) * (door_cycle + delays)) + (2 * p * inputs['passenger_time'])
     interval = rtt / inputs['num_elevators']
     awt = interval * 0.7 
@@ -55,21 +52,18 @@ def run_lta_logic(inputs):
 
 # --- 2. UI SETUP ---
 st.set_page_config(page_title="Professional LTA Suite", layout="wide")
-st.title("🏗️ Lift Traffic Analysis & Demand Modeling")
+st.title("🏗️ Lift Traffic Analysis & Peak Demand Modeling")
 
 # --- SIDEBAR: SYSTEM PARAMETERS (FROM IMAGE) ---
 st.sidebar.header("⚙️ System Parameters")
 with st.sidebar:
-    # Adding parameters from the provided image
     cap_kg = st.number_input("Capacity (kg)", value=1000)
     floor_area = st.number_input("Floor area (m²)", value=2.4)
     home_floor = st.number_input("Home Floor", value=1)
     shut_down = st.number_input("Shut down time (s)", value=0)
     restart_t = st.number_input("Restart time (s)", value=0)
-    
     st.divider()
-    paypal_url = "https://www.paypal.com/paypalme/YOUR_USERNAME"
-    st.markdown(f'[Donate via PayPal]({paypal_url})')
+    st.write("☕ [Support via PayPal](https://www.paypal.com/paypalme/YOUR_USERNAME)")
 
 # --- MAIN INPUTS ---
 col1, col2 = st.columns(2)
@@ -78,7 +72,12 @@ with col1:
     total_floors = st.number_input("Total Floors", value=12)
     pop = st.number_input("Total Population", value=400)
     floor_h = st.number_input("Floor Height (m)", value=3.5)
-    # Peak Hour Demand Input
+    
+    # NEW: PEAK TIME SELECTION
+    st.write("**Set Peak Period**")
+    peak_range = st.slider("Select Analysis Window", 
+                           value=(time(7, 0), time(10, 0)),
+                           format="HH:mm")
     peak_rate = st.slider("Peak Arrival Rate (% of Pop / 5 min)", 5.0, 25.0, 12.0)
 
 with col2:
@@ -89,7 +88,7 @@ with col2:
     jerk = st.number_input("Jerk (m/s³)", value=1.0)
     car_cap = st.number_input("Car Capacity (persons)", value=13)
 
-with st.expander("⏱️ Door Timings (from Parameters List)", expanded=True):
+with st.expander("⏱️ Door Timings & Delays", expanded=True):
     c1, c2, c3 = st.columns(3)
     t_pre_open = c1.number_input("Door Pre-opening (s)", value=0.5)
     t_open = c1.number_input("Door Open Time (s)", value=2.0)
@@ -108,32 +107,37 @@ res = run_lta_logic({
     't_dwell_1': t_dwell_1, 't_dwell_2': t_dwell_2, 'start_delay': start_delay, 'level_delay': level_delay
 })
 
-# --- 3. DEMAND GRAPH ---
+# --- 3. DYNAMIC DEMAND GRAPH ---
 st.divider()
-st.subheader("📈 Passenger Demand & Wait Time Analysis")
+st.subheader("📊 Traffic Profile & Performance")
 g1, g2 = st.columns(2)
 
-# Demand Graph (Normal Distribution centered on Peak)
 with g1:
-    hours = np.linspace(7, 10, 100) # 7 AM to 10 AM
-    demand = peak_rate * np.exp(-0.5 * ((hours - 8.5) / 0.4)**2) # Peak at 8:30 AM
+    # Convert time to float for calculation
+    start_h = peak_range[0].hour + peak_range[0].minute/60
+    end_h = peak_range[1].hour + peak_range[1].minute/60
+    mid_h = (start_h + end_h) / 2
+    
+    hours = np.linspace(start_h - 1, end_h + 1, 100)
+    # Generate bell curve centered on the middle of the user-selected range
+    demand = peak_rate * np.exp(-0.5 * ((hours - mid_h) / ((end_h - start_h)/4))**2)
+    
     fig1, ax1 = plt.subplots(figsize=(6, 4))
     ax1.plot(hours, demand, color='tab:red', linewidth=2)
     ax1.fill_between(hours, demand, color='tab:red', alpha=0.3)
-    ax1.set_title("Morning Peak Demand Profile")
-    ax1.set_xlabel("Time of Day")
+    ax1.set_title(f"Peak Demand Profile ({peak_range[0].strftime('%H:%M')} - {peak_range[1].strftime('%H:%M')})")
+    ax1.set_xlabel("Hour of Day")
     ax1.set_ylabel("Arrival Rate (%)")
     st.pyplot(fig1)
 
-# Wait Time Distribution
 with g2:
     wait_data = np.random.normal(res['AWT'], res['AWT']/4, 500)
     fig2, ax2 = plt.subplots(figsize=(6, 4))
     ax2.hist(wait_data, bins=25, color='#0070BA', edgecolor='white')
-    ax2.set_title(f"Wait Time Distribution (Avg: {res['AWT']}s)")
+    ax2.set_title(f"Wait Time Probability (Avg: {res['AWT']}s)")
     st.pyplot(fig2)
 
-# Results Metrics
+# Metrics
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("RTT", f"{res['RTT']}s")
 m2.metric("Interval", f"{res['Interval']}s")
@@ -141,23 +145,29 @@ m3.metric("AWT", f"{res['AWT']}s")
 m4.metric("Handling Cap", f"{res['HC']}%")
 
 # --- 4. EXPORT ---
-if st.button("📥 Download Technical Report"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, "LTA Technical Report", ln=True, align='C')
-    pdf.set_font("Arial", size=10)
-    pdf.ln(10)
-    
-    # Summary of all parameters from the image
-    pdf.cell(0, 10, f"System Specs: Capacity: {cap_kg}kg | Area: {floor_area}m2 | Home Floor: {home_floor}", ln=True)
-    pdf.cell(0, 10, f"RTT: {res['RTT']}s | Interval: {res['Interval']}s | AWT: {res['AWT']}s", ln=True)
+if st.button("📥 Export Technical Report"):
+    try:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", 'B', 16)
+        pdf.cell(0, 15, "Lift Traffic Analysis Report", ln=True, align='C')
+        pdf.set_font("Helvetica", size=10)
+        pdf.cell(0, 8, f"Project: {st_job} | Analyst: {st_user}", ln=True)
+        pdf.ln(5)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-        fig1.savefig(tmp.name)
-        pdf.image(tmp.name, x=10, y=50, w=90)
-    
-    pdf_out = pdf.output()
-    # Check for string vs bytes for different FPDF versions
-    pdf_bytes = pdf_out.encode('latin-1') if isinstance(pdf_out, str) else pdf_out
-    st.download_button("Save PDF", data=pdf_bytes, file_name="LTA_Report.pdf")
+        # Performance Results
+        pdf.set_font("Helvetica", 'B', 12)
+        pdf.cell(0, 10, "Calculation Results", ln=True)
+        pdf.set_font("Helvetica", size=10)
+        pdf.cell(0, 8, f"Round Trip Time: {res['RTT']}s | Interval: {res['Interval']}s", ln=True)
+        pdf.cell(0, 8, f"Average Wait Time: {res['AWT']}s | Handling Capacity: {res['HC']}%", ln=True)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            fig1.savefig(tmp.name)
+            pdf.image(tmp.name, x=10, w=100)
+        
+        pdf_out = pdf.output()
+        pdf_bytes = pdf_out.encode('latin-1') if isinstance(pdf_out, str) else pdf_out
+        st.download_button("Save PDF Report", data=pdf_bytes, file_name=f"LTA_{st_no}.pdf")
+    except Exception as e:
+        st.error(f"Export Error: {e}")
